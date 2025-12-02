@@ -81,70 +81,276 @@ cat > app/config.py << 'EOF'
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
+
 class Settings(BaseSettings):
     # API Settings
     app_name: str = "AI Chat API"
     version: str = "1.0.0"
-    
+
     # AI Settings
     anthropic_api_key: str
-    default_model: str = "claude-3-5-sonnet-20241022"
+    gemini_api_key: str
+
+    claude_model: str = "claude-3-5-sonnet-20241022"
+    google_model: str = "gemini-2.5-flash"
+
+    default_model: str = google_model
     max_tokens: int = 1024
-    
+    temperature: float = 0.7
+
     # Server Settings
     environment: str = "development"
     log_level: str = "INFO"
-    
+
     class Config:
         env_file = ".env"
+
 
 @lru_cache()
 def get_settings():
     return Settings()
 EOF
 
+# Create app/core/ai_base_client.py
+echo "🤖 Creating app/core/ai_base_client.py..."
+cat > app/core/ai_base_client.py << 'EOF'
+# app/core/ai_client_base.py
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Generator, Optional
+
+
+class AbstractAIClient(ABC):
+    """
+    Abstract Base Class defining the contract for all AI client implementations.
+    Every concrete client (Anthropic, Gemini) must implement these methods.
+    """
+
+    @abstractmethod
+    def generate_response(
+        self, messages: List[Dict[str, str]], system_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Returns: {"text": str, "model": str, "raw": Any}
+        """
+        pass
+
+    @abstractmethod
+    def stream_response(
+        self, messages: List[Dict[str, str]], system_prompt: Optional[str] = None
+    ) -> Generator[str, None, None]:  # More precise type
+        pass
+
+    @abstractmethod
+    def parse_response_text(self, response: Dict[str, Any]) -> str:
+        """
+        Extracts the final response text from the raw SDK response object.
+        This is where the provider-specific logic (like .content[0].text) belongs.
+        """
+        pass
+
+EOF
+
+# Create app/core/ai_client_google.py
+echo "🤖 Creating app/core/ai_client_google.py..."
+cat > app/core/ai_client_google.py << 'EOF'
+# app/core/gemini_client.py
+
+import google.genai as genai
+from google.genai import types as gtypes
+from typing import List, Dict, Generator, Any
+
+import logging
+from app.config import get_settings
+from app.core.ai_base_client import AbstractAIClient
+
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+
+class GeminiAIClient(AbstractAIClient):
+    """
+    Concrete implementation for Google Gemini.
+    """
+
+    def __init__(self):
+        # Auto loads GEMINI_API_KEY from environment
+        self.client = genai.Client(api_key=settings.gemini_api_key)
+
+    # -----------------------------------------------------
+    # INTERNAL HELPERS
+    # -----------------------------------------------------
+    def _convert_messages(self, messages: List[Dict[str, str]]):
+        """
+        Converts our internal message format:
+        {"role": "user" | "assistant", "content": "..."}
+        into Gemini's list of Content objects.
+        """
+        contents = []
+
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+
+            contents.append(
+                gtypes.Content(
+                    role=role,
+                    parts=[
+                        # Previous fix: Ensure 'text' is passed as a keyword argument
+                        gtypes.Part.from_text(text=msg["content"])
+                    ],
+                )
+            )
+
+        return contents
+
+    def _create_config(self, system_prompt: str | None):
+        """
+        Build Gemini's config object (temperature, tokens, system prompt).
+        """
+        config = gtypes.GenerateContentConfig(
+            max_output_tokens=settings.max_tokens,
+            temperature=settings.temperature,
+        )
+
+        if system_prompt:
+            config.system_instruction = system_prompt
+
+        return config
+
+    # -----------------------------------------------------
+    # NON-STREAMING RESPONSE
+    # -----------------------------------------------------
+    def generate_response(
+        self, messages: List[Dict[str, str]], system_prompt: str | None = None
+    ) -> Dict[str, Any]:
+
+        contents = self._convert_messages(messages)
+        config = self._create_config(system_prompt)
+
+        response = self.client.models.generate_content(
+            model=settings.google_model,
+            contents=contents,
+            config=config,
+        )
+
+        text = self.parse_response_text(response)
+
+        # Retaining the fix for 'GenerateContentResponse' object has no attribute 'model'
+        return {"text": text, "raw": response, "model": settings.google_model}
+
+    # -----------------------------------------------------
+    # STREAMING RESPONSE
+    # -----------------------------------------------------
+    def stream_response(
+        self, messages: List[Dict[str, str]], system_prompt: str | None = None
+    ) -> Generator[str, None, None]:
+
+        contents = self._convert_messages(messages)
+        config = self._create_config(system_prompt)
+
+        stream = self.client.models.generate_content_stream(
+            model=settings.google_model,
+            contents=contents,
+            config=config,
+        )
+
+        for chunk in stream:
+            # chunks arrive as events containing parts
+            if not chunk or not chunk.candidates:
+                logger.debug("Empty chunk received")
+                continue
+
+            candidate = chunk.candidates[0]
+
+            # FIX 1: Add a defensive check for candidate.content
+            if not candidate.content or not candidate.content.parts:
+                continue  # Skip this chunk if content is missing (e.g., safety block)
+
+            part = candidate.content.parts[0]
+
+            if part.text:
+                yield part.text
+
+    # -----------------------------------------------------
+    # PARSING RAW RESPONSE
+    # -----------------------------------------------------
+    def parse_response_text(self, response) -> str:
+        """
+        Extracts the text from Gemini's response.
+        The preferred way is using the top-level .text accessor on the response object.
+        """
+        # Use the simple .text accessor provided by the SDK
+        if response.text:
+            return response.text
+
+        # Fallback to the deep candidates path with defensive checks
+        try:
+            candidate = response.candidates[0]
+
+            # FIX 2: Add a defensive check for candidate.content
+            if candidate.content and candidate.content.parts:
+                return candidate.content.parts[0].text
+        except (AttributeError, IndexError):
+            # This handles cases where candidates list is empty or candidate is malformed
+            return ""
+
+        return ""
+
+
+# Singleton instance
+gemini_client = GeminiAIClient()
+
+EOF
+
+
 # Create app/core/ai_client.py
 echo "🤖 Creating app/core/ai_client.py..."
 cat > app/core/ai_client.py << 'EOF'
-import anthropic
+# app/core/ai_client.py - IMPROVED VERSION
 from app.config import get_settings
+from app.core.ai_client_anthropic import anthropic_client
+from app.core.ai_client_google import gemini_client
+from app.core.ai_base_client import AbstractAIClient
+from typing import Optional
 
 settings = get_settings()
 
-class AIClient:
-    def __init__(self):
-        self.client = anthropic.Anthropic(
-            api_key=settings.anthropic_api_key
-        )
-    
-    def generate_response(self, messages, system_prompt=None):
-        """Generate a response from Claude"""
-        kwargs = {
-            "model": settings.default_model,
-            "max_tokens": settings.max_tokens,
-            "messages": messages
-        }
-        
-        if system_prompt:
-            kwargs["system"] = system_prompt
-            
-        return self.client.messages.create(**kwargs)
-    
-    def stream_response(self, messages, system_prompt=None):
-        """Stream a response from Claude"""
-        kwargs = {
-            "model": settings.default_model,
-            "max_tokens": settings.max_tokens,
-            "messages": messages
-        }
-        
-        if system_prompt:
-            kwargs["system"] = system_prompt
-            
-        return self.client.messages.stream(**kwargs)
 
-# Singleton instance
-ai_client = AIClient()
+class AIClientManager:
+    """Manages AI client instances and provides dynamic switching"""
+
+    _clients = {
+        "claude": anthropic_client,
+        "gemini": gemini_client,
+    }
+
+    def get_client(self, model_name: Optional[str] = None) -> AbstractAIClient:
+        """Get client for specific model or default"""
+        if model_name is None:
+            model_name = settings.default_model
+
+        model_lower = model_name.lower()
+
+        for prefix, client in self._clients.items():
+            if model_lower.startswith(prefix):
+                return client
+
+        raise ValueError(
+            f"Unsupported model: {model_name}. Available: {list(self._clients.keys())}"
+        )
+
+    @property
+    def default_client(self) -> AbstractAIClient:
+        """Get the default client based on settings"""
+        return self.get_client()
+
+
+# Create singleton manager
+ai_client_manager = AIClientManager()
+
+# For backward compatibility
+ai_client = ai_client_manager.default_client
+
 EOF
 
 # Create app/models/chat.py
@@ -174,54 +380,58 @@ EOF
 # Create app/services/chat_service.py
 echo "🔧 Creating app/services/chat_service.py..."
 cat > app/services/chat_service.py << 'EOF'
-from app.models.chat import ChatRequest, ChatResponse, SystemChatRequest
+from typing import Dict, List
+from app.models.chat import ChatRequest, ChatResponse, Message, SystemChatRequest
 from app.core.ai_client import ai_client
+
 
 class ChatService:
     async def process_chat(self, request: ChatRequest) -> ChatResponse:
         """Process a chat request and return a response"""
         messages = self._build_messages(request.conversation_history, request.message)
-        
-        response = ai_client.generate_response(messages)
-        
+
+        # ai_client.generate_response now returns a standardized dict: {"text": str, "model": str, "raw": object}
+        result = ai_client.generate_response(messages)
+
         return ChatResponse(
-            response=response.content[0].text,
-            model=response.model
+            # FIX 1: Get the clean text from the standardized result dict
+            response=result["text"],
+            # FIX 2: Get the model name from the standardized result dict
+            model=result["model"],
         )
-    
+
     async def process_system_chat(self, request: SystemChatRequest) -> ChatResponse:
         """Process a chat request with a system prompt"""
         messages = self._build_messages(request.conversation_history, request.message)
-        
-        response = ai_client.generate_response(
-            messages=messages,
-            system_prompt=request.system_prompt
+
+        result = ai_client.generate_response(
+            messages=messages, system_prompt=request.system_prompt
         )
-        
+
         return ChatResponse(
-            response=response.content[0].text,
-            model=response.model
+            # FIX 3: Get the clean text from the standardized result dict
+            response=result["text"],
+            # FIX 4: Get the model name from the standardized result dict
+            model=result["model"],
         )
-    
-    def _build_messages(self, history, new_message):
+
+    def _build_messages(
+        self, history: List[Message], new_message: str
+    ) -> List[Dict[str, str]]:
         """Build messages list from history and new message"""
         messages = []
-        
+
         for msg in history:
-            messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
-        
-        messages.append({
-            "role": "user",
-            "content": new_message
-        })
-        
+            messages.append({"role": msg.role, "content": msg.content})
+
+        messages.append({"role": "user", "content": new_message})
+
         return messages
+
 
 # Singleton instance
 chat_service = ChatService()
+
 EOF
 
 # Create app/api/routes/health.py
@@ -263,10 +473,11 @@ from app.core.ai_client import ai_client
 
 router = APIRouter()
 
+
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Send a message to Claude and get a response.
+    Send a message to AI and get a response.
     Supports conversation history for context.
     """
     try:
@@ -274,37 +485,36 @@ async def chat(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-@router.post("/system", response_model=ChatResponse)
-async def chat_with_system(request: SystemChatRequest):
-    """
-    Chat with a custom system prompt.
-    Useful for creating specialized agents.
-    """
-    try:
-        return await chat_service.process_system_chat(request)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest):
     """
-    Stream responses from Claude in real-time.
+    Stream responses from the selected AI model in real-time.
     """
+
     async def generate():
         try:
             messages = []
             for msg in request.conversation_history:
                 messages.append({"role": msg.role, "content": msg.content})
             messages.append({"role": "user", "content": request.message})
-            
-            with ai_client.stream_response(messages) as stream:
-                for text in stream.text_stream:
-                    yield text
-        
+
+            # FIX: Call the stream_response method which now returns a generator
+            # We iterate directly over the generator, which yields text chunks (str)
+            stream_generator = ai_client.stream_response(messages)
+
+            # The async generator wrapper is required for StreamingResponse
+            for text_chunk in stream_generator:
+                yield text_chunk.encode(
+                    "utf-8"
+                )  # Yield bytes as required by StreamingResponse
+
         except Exception as e:
-            yield f"Error: {str(e)}"
-    
+            # Handle error during stream generation
+            yield f"Error: {str(e)}".encode("utf-8")
+
     return StreamingResponse(generate(), media_type="text/plain")
+
 EOF
 
 # Create app/main.py
