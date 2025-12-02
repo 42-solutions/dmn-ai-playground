@@ -24,7 +24,7 @@ touch tests/__init__.py
 echo "🔒 Creating .gitignore..."
 cat > .gitignore << 'EOF'
 # Virtual Environment
-venv/
+.venv/
 env/
 .venv/
 

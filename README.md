@@ -13,22 +13,26 @@ FastAPI-based AI chat application using Claude (Anthropic).
 ## Setup
 
 1. **Activate your virtual environment** (you should have done this already):
+
    ```bash
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   source .venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
 2. **Install dependencies**:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 3. **Configure environment variables**:
+
    ```bash
    # Edit .env file with your Anthropic API key
    nano .env  # or use any text editor
    ```
 
 4. **Run the server**:
+
    ```bash
    python run.py
    ```
@@ -58,10 +62,12 @@ FastAPI-based AI chat application using Claude (Anthropic).
 ## API Endpoints
 
 ### Health Check
+
 - `GET /` - Root endpoint
 - `GET /health` - Health check
 
 ### Chat
+
 - `POST /api/v1/chat/` - Send a message
 - `POST /api/v1/chat/system` - Chat with custom system prompt
 - `POST /api/v1/chat/stream` - Stream responses
@@ -103,11 +109,13 @@ response = requests.post(
 ## Development
 
 Run with auto-reload:
+
 ```bash
 python run.py
 ```
 
 Or use uvicorn directly:
+
 ```bash
 uvicorn app.main:app --reload
 ```
