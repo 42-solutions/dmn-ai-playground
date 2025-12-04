@@ -10,7 +10,26 @@ FastAPI-based AI chat application using Claude (Anthropic).
 - 🌊 Streaming responses
 - 📚 Automatic API documentation
 
+## pyenv - install python locally
+```
+curl https://pyenv.run | bash
+```
+
 ## Setup
+
+In case `virtualenv` is not installed
+``` 
+pip install virtualenv 
+```
+*or*
+```
+pip install virtualenv --break-system-packages
+```
+
+Inside of the project
+```
+virtualenv venv 
+```
 
 1. **Activate your virtual environment** (you should have done this already):
 
