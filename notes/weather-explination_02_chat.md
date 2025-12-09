@@ -226,12 +226,276 @@ It is a **chain of responsibility**, each part doing one job very well.
 
 ---
 
-# If you want next:
+Absolutely — here is a **full, clean, beginner-friendly explanation of the entire weather tool system**, from top to bottom, so you finally understand it fully and clearly.
 
-I can explain:
+---
 
-✅ How to **“train”** your agent using examples
-✅ How the LLM decides which data to request
-✅ How to build the **function calling schema**
-✅ How to add support for multiple cities
-✅ How to support natural language like “tomorrow at 3 PM”
+# ✅ **THE BIG PICTURE**
+
+You are building a **chat endpoint** where the AI (Gemini) can:
+
+1. **Talk normally**, like a regular chatbot
+2. **OR request live weather data** using a “tool”
+
+A **tool** is simply a **Python function** (in your backend) that the AI can ask you to run.
+
+The AI **cannot call the internet itself**, so tools allow it to say:
+
+> “I need live weather → please call this function for me.”
+
+You detect that, run the tool, send the result back to the AI, and then the AI writes a final answer.
+
+---
+
+# 🎯 **THE FULL FLOW (VERY IMPORTANT)**
+
+Here is the exact chain of actions for a weather request:
+
+---
+
+## **1️⃣ User says something**
+
+Example:
+
+> "What's the weather in Berlin?"
+
+---
+
+## **2️⃣ You send messages to Gemini**
+
+```python
+messages = [
+    {"role": "system", "content": SYSTEM_PROMPT},
+    ...conversation history...
+    {"role": "user", "content": "What's the weather in Berlin?"}
+]
+```
+
+---
+
+## **3️⃣ Gemini reads the SYSTEM_PROMPT**
+
+Your SYSTEM_PROMPT says:
+
+> "If the user wants live weather → return a JSON object describing WHICH tool to use and WHAT arguments."
+
+So Gemini returns something like:
+
+```json
+{
+  "tool_call": {
+    "name": "get_weather_by_place",
+    "arguments": { "place": "Berlin" }
+  }
+}
+```
+
+No text.
+Only JSON.
+
+---
+
+## **4️⃣ Your backend reads that JSON**
+
+```python
+tool = payload["tool_call"]
+name = tool["name"]
+args = tool["arguments"]
+```
+
+You check:
+
+- If tool is `get_weather_by_place` → call `get_weather_by_place()`
+- If tool is `get_weather_by_coords` → call `get_weather_by_coords()`
+
+---
+
+## **5️⃣ Backend executes the “tool”**
+
+This is your code:
+
+### **get_weather_by_place()**
+
+```python
+coords = await weather_service.geocode(place)
+return await get_weather_by_coords(coords["lat"], coords["lon"])
+```
+
+This means:
+
+**(A) Convert "Berlin" → latitude/longitude using Nominatim**
+**(B) Then fetch live weather using Open-Meteo**
+
+---
+
+## **6️⃣ WeatherServiceChatGPT makes API requests**
+
+### 🌍 Geocoding API
+
+```
+NOMINATIM_BASE = "https://nominatim.openstreetmap.org/search"
+```
+
+Used to convert "Berlin" → coordinates.
+
+### 🌤 Weather API
+
+```
+OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
+```
+
+Used to get temperature, humidity, wind, etc.
+
+These constants are just URLs.
+They avoid repeating long strings.
+
+---
+
+## **7️⃣ Tool returns weather data**
+
+Your `get_weather_by_coords()` returns:
+
+```json
+{
+  "raw": {...},
+  "current": {...},
+  "today": {...},
+  "hourly_sample": [...]
+}
+```
+
+---
+
+## **8️⃣ Your backend sends this back to Gemini**
+
+```python
+messages.append({
+  "role": "tool",
+  "content": json.dumps({"name": name, "result": tool_result})
+})
+```
+
+Now Gemini knows:
+
+- The tool was executed
+- What the weather is
+
+---
+
+## **9️⃣ Gemini generates the final user-friendly answer**
+
+Example:
+
+> "Current temperature in Berlin is 14°C, with wind 23 km/h..."
+
+This is what the user finally sees.
+
+---
+
+# 🎉 **NOW THE KEY PARTS (EXPLAINED SIMPLY)**
+
+---
+
+# 🔹 **SYSTEM_PROMPT**
+
+It tells Gemini:
+
+- When to call a tool
+- How to format the JSON
+- When to reply normally
+
+It enforces the tool-calling behavior.
+
+---
+
+# 🔹 **extract_json()**
+
+Gemini might wrap the JSON inside:
+
+````
+```json
+{
+  ...
+}
+````
+
+This function removes the code fences.
+
+---
+
+# 🔹 **process_chat()**
+
+This is the **brain** of your entire weather tool logic.
+
+Steps inside:
+
+### ✔️ Build messages
+
+(system, history, user)
+
+### ✔️ Get initial AI response
+
+This may be:
+
+- normal text
+- JSON for tool call
+
+### ✔️ Try to parse JSON
+
+If JSON exists → call tool
+If not → return AI text directly
+
+### ✔️ After executing tool
+
+Send the result back as a **tool message**
+
+### ✔️ Ask Gemini for final answer
+
+---
+
+# 🔹 **WeatherServiceChatGPT**
+
+This is just a helper class that makes external HTTP requests:
+
+1. Geocoding (city → coords)
+2. Weather (coords → forecast)
+
+---
+
+# 🧭 **What Are “Tools” in Your Project?**
+
+They are just Python functions:
+
+```python
+async def get_weather_by_place(...)
+async def get_weather_by_coords(...)
+```
+
+Your AI can't call APIs.
+But **your API can**, using these functions.
+
+Tools allow the AI to _ask_ your backend to run them.
+
+---
+
+# 🧠 **You Now Understand:**
+
+### ✔️ What tools are
+
+### ✔️ Why SYSTEM_PROMPT exists
+
+### ✔️ Why we parse JSON
+
+### ✔️ Why OPEN_METEO_BASE and NOMINATIM_BASE exist
+
+### ✔️ How the backend fetches real weather
+
+### ✔️ How the AI knows when to ask for live weather
+
+### ✔️ Why the AI returns JSON on first response
+
+### ✔️ How your backend completes the loop
+
+---
+
+![alt text](image.png)
