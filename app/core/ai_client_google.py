@@ -5,12 +5,53 @@ from google.genai import types as gtypes
 from typing import List, Dict, Generator, Any
 
 import logging
+
+from google.genai.types import GenerateContentResponse
+
 from app.config import get_settings
 from app.core.ai_base_client import AbstractAIClient
 
-
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def _convert_messages(messages: List[Dict[str, str]]):
+    """
+    Converts our internal message format:
+    {"role": "user" | "assistant", "content": "..."}
+    into Gemini's list of Content objects.
+    """
+    contents = []
+
+    for msg in messages:
+        role = "user" if msg["role"] == "user" else "model"
+
+        contents.append(
+            gtypes.Content(
+                role=role,
+                parts=[
+                    # Previous fix: Ensure 'text' is passed as a keyword argument
+                    gtypes.Part.from_text(text=msg["content"])
+                ],
+            )
+        )
+
+    return contents
+
+
+def _create_config(system_prompt: str | None):
+    """
+    Build Gemini's config object (temperature, tokens, system prompt).
+    """
+    config = gtypes.GenerateContentConfig(
+        max_output_tokens=settings.max_tokens,
+        temperature=settings.temperature,
+    )
+
+    if system_prompt:
+        config.system_instruction = system_prompt
+
+    return config
 
 
 class GeminiAIClient(AbstractAIClient):
@@ -19,58 +60,18 @@ class GeminiAIClient(AbstractAIClient):
     """
 
     def __init__(self):
-        # Auto loads GEMINI_API_KEY from environment
+        # Autoloads GEMINI_API_KEY from environment
         self.client = genai.Client(api_key=settings.gemini_api_key)
-
-    # -----------------------------------------------------
-    # INTERNAL HELPERS
-    # -----------------------------------------------------
-    def _convert_messages(self, messages: List[Dict[str, str]]):
-        """
-        Converts our internal message format:
-        {"role": "user" | "assistant", "content": "..."}
-        into Gemini's list of Content objects.
-        """
-        contents = []
-
-        for msg in messages:
-            role = "user" if msg["role"] == "user" else "model"
-
-            contents.append(
-                gtypes.Content(
-                    role=role,
-                    parts=[
-                        # Previous fix: Ensure 'text' is passed as a keyword argument
-                        gtypes.Part.from_text(text=msg["content"])
-                    ],
-                )
-            )
-
-        return contents
-
-    def _create_config(self, system_prompt: str | None):
-        """
-        Build Gemini's config object (temperature, tokens, system prompt).
-        """
-        config = gtypes.GenerateContentConfig(
-            max_output_tokens=settings.max_tokens,
-            temperature=settings.temperature,
-        )
-
-        if system_prompt:
-            config.system_instruction = system_prompt
-
-        return config
 
     # -----------------------------------------------------
     # NON-STREAMING RESPONSE
     # -----------------------------------------------------
     def generate_response(
-        self, messages: List[Dict[str, str]], system_prompt: str | None = None
+            self, messages: List[Dict[str, str]], system_prompt: str | None = None
     ) -> Dict[str, Any]:
 
-        contents = self._convert_messages(messages)
-        config = self._create_config(system_prompt)
+        contents = _convert_messages(messages)
+        config = _create_config(system_prompt)
 
         response = self.client.models.generate_content(
             model=settings.google_model,
@@ -87,11 +88,11 @@ class GeminiAIClient(AbstractAIClient):
     # STREAMING RESPONSE
     # -----------------------------------------------------
     def stream_response(
-        self, messages: List[Dict[str, str]], system_prompt: str | None = None
+            self, messages: List[Dict[str, str]], system_prompt: str | None = None
     ) -> Generator[str, None, None]:
 
-        contents = self._convert_messages(messages)
-        config = self._create_config(system_prompt)
+        contents = _convert_messages(messages)
+        config = _create_config(system_prompt)
 
         stream = self.client.models.generate_content_stream(
             model=settings.google_model,
@@ -119,7 +120,7 @@ class GeminiAIClient(AbstractAIClient):
     # -----------------------------------------------------
     # PARSING RAW RESPONSE
     # -----------------------------------------------------
-    def parse_response_text(self, response) -> str:
+    def parse_response_text(self, response: GenerateContentResponse) -> str:
         """
         Extracts the text from Gemini's response.
         The preferred way is using the top-level .text accessor on the response object.

@@ -1,13 +1,11 @@
 # app/core/tools/weather_tool.py
 from typing import Dict, Any, Optional
-from app.services.weather_service_chatgpt import WeatherServiceChatGPT
+from app.services.weather_service_chatgpt import fetch_open_meteo, geocode
 from app.core.weather_response_chatgpt import WeatherResponseChatGPT
-
-weather_service = WeatherServiceChatGPT()
 
 
 async def get_weather_by_coords(latitude: float, longitude: float) -> Dict[str, Any]:
-    raw = await weather_service.fetch_open_meteo(latitude, longitude)
+    raw = await fetch_open_meteo(latitude, longitude)
     parsed = WeatherResponseChatGPT(raw)
     return {
         "raw": raw,
@@ -18,7 +16,7 @@ async def get_weather_by_coords(latitude: float, longitude: float) -> Dict[str, 
 
 
 async def get_weather_by_place(place: str) -> Dict[str, Any]:
-    coords = await weather_service.geocode(place)
+    coords = await geocode(place)
     if not coords:
         return {"error": f"Could not find coordinates for '{place}'"}
     return await get_weather_by_coords(coords["lat"], coords["lon"])

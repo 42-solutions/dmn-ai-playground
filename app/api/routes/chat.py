@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from app.models.chat import ChatRequest, ChatResponse, SystemChatRequest
-from app.services.chat_service import chat_service
+from app.models.chat import ChatRequest, ChatResponse
 from app.core.ai_client import ai_client
+from app.services.chat_service_weather_chatgpt import process_chat
 
 router = APIRouter()
 
@@ -14,7 +14,7 @@ async def chat(request: ChatRequest):
     Supports conversation history for context.
     """
     try:
-        return await chat_service.process_chat(request)
+        return await process_chat(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
